@@ -478,13 +478,6 @@ kubectl patch meshconfig osm-mesh-config -n kube-system -p '{"spec":{"traffic":{
 
 pkill nohup
 
-# to retain Azure Monitor metrics integration
-SAMPLE_VERSION=v0.11
-kubectl delete -f https://raw.githubusercontent.com/openservicemesh/osm/release-$SAMPLE_VERSION/docs/example/manifests/apps/bookbuyer.yaml
-kubectl delete -f https://raw.githubusercontent.com/openservicemesh/osm/release-$SAMPLE_VERSION/docs/example/manifests/apps/bookthief.yaml
-kubectl delete -f https://raw.githubusercontent.com/openservicemesh/osm/release-$SAMPLE_VERSION/docs/example/manifests/apps/bookstore.yaml
-kubectl delete -f https://raw.githubusercontent.com/openservicemesh/osm/release-$SAMPLE_VERSION/docs/example/manifests/apps/bookwarehouse.yaml
-
 # or to fully clean up
 kubectl delete ns bookstore
 kubectl delete ns bookbuyer
