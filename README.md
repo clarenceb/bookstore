@@ -41,7 +41,7 @@ kubectl create ns bookwarehouse
 # the Envoy sidecar proxy containers with applications deployed in those namespaces.
 osm namespace add bookstore bookbuyer bookthief bookwarehouse
 
-kubectrl describe ns bookstore
+kubectl describe ns bookstore
 
 # Deploy the sample application to the AKS cluster
 SAMPLE_VERSION=v0.11
