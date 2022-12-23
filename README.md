@@ -1,13 +1,35 @@
 Bookstore Demo for OSM
 ======================
 
-Based upon the demo [Manage a new application with Open Service Mesh (OSM) on Azure Kubernetes Service (AKS)](https://github.com/MicrosoftDocs/azure-docs/blob/cf692573b67503441d36a6c2f0a5a649b7b46166/articles/aks/open-service-mesh-deploy-new-application.md).
+Based upon the demo Open Service Mesh / Getting Started / Deploy Applications](https://release-v1-2.docs.openservicemesh.io/docs/getting_started/install_apps/).
 
 Prerequisites
 -------------
 
-* AKS cluster
-* OSM add-on enabled
+* [Create](https://learn.microsoft.com/en-us/azure/aks/learn/quick-kubernetes-deploy-cli) an AKS cluster
+* [Install]((https://learn.microsoft.com/en-us/azure/aks/open-service-mesh-about#installation-and-version)) the OSM add-on
+* [Install](https://learn.microsoft.com/en-us/azure/aks/open-service-mesh-binary?pivots=client-operating-system-linux#download-and-install-the-open-service-mesh-osm-client-binary) the OSM CLI and configure it for [AKS mode](https://learn.microsoft.com/en-us/azure/aks/open-service-mesh-binary?pivots=client-operating-system-linux#configure-osm-cli-variables-with-an-osm_config-file)
+
+Install and configure OSM CLI
+-----------------------------
+
+```sh
+cat << EOF > $HOME/.osm/config.yaml
+install:
+  kind: managed
+  distribution: AKS
+  namespace: kube-system
+EOF
+
+# Specify the OSM version that matches your OSM add-on version
+OSM_VERSION=$(kubectl get deploy osm-controller -n kube-system -o=jsonpath='{.spec.template.metadata.labels.app\.kubernetes\.io\/version}')
+
+curl -sL "https://github.com/openservicemesh/osm/releases/download/$OSM_VERSION/osm-$OSM_VERSION-linux-amd64.tar.gz" | tar -vxzf -
+sudo mv ./linux-amd64/osm /usr/local/bin/osm
+sudo chmod +x /usr/local/bin/osm
+rm -rf ./linux-amd64
+osm version
+```
 
 Optional: Install Kubeview
 --------------------------
@@ -17,6 +39,7 @@ helm upgrade \
     --install kubeview \
     https://github.com/benc-uk/kubeview/releases/download/0.1.31/kubeview-0.1.31.tgz \
     -n kubeview \
+    --create-namespace \
     --set loadBalancer.enabled=false
 
 nohup kubectl port-forward -n kubeview svc/kubeview 8088:80 &
@@ -30,12 +53,13 @@ Install the Bookstore app
 ```sh
 # Verify your mesh has permissive mode enabled
 kubectl get meshconfig osm-mesh-config -n kube-system -o=jsonpath='{$.spec.traffic.enablePermissiveTrafficPolicyMode}'
+# If not, then enable it
 kubectl patch meshconfig osm-mesh-config -n kube-system -p '{"spec":{"traffic":{"enablePermissiveTrafficPolicyMode":true}}}' --type=merge
 
-kubectl create ns bookstore
-kubectl create ns bookbuyer
-kubectl create ns bookthief
-kubectl create ns bookwarehouse
+kubectl create namespace bookstore
+kubectl create namespace bookbuyer
+kubectl create namespace bookthief
+kubectl create namespace bookwarehouse
 
 # When you add namespaces to the OSM mesh, the OSM controller automatically injects
 # the Envoy sidecar proxy containers with applications deployed in those namespaces.
@@ -44,17 +68,27 @@ osm namespace add bookstore bookbuyer bookthief bookwarehouse
 kubectl describe ns bookstore
 
 # Deploy the sample application to the AKS cluster
-SAMPLE_VERSION=v0.11
-kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm/release-$SAMPLE_VERSION/docs/example/manifests/apps/bookbuyer.yaml
-kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm/release-$SAMPLE_VERSION/docs/example/manifests/apps/bookthief.yaml
-kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm/release-$SAMPLE_VERSION/docs/example/manifests/apps/bookstore.yaml
-kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm/release-$SAMPLE_VERSION/docs/example/manifests/apps/bookwarehouse.yaml
+SAMPLE_VERSION=release-$(echo $OSM_VERSION | sed 's/\(v[0-9]\.[0-9]\)\.[0-9]/\1/')
+kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm-docs/$SAMPLE_VERSION/manifests/apps/bookbuyer.yaml
+kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm-docs/$SAMPLE_VERSION/manifests/apps/bookthief.yaml
+kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm-docs/$SAMPLE_VERSION/manifests/apps/bookstore.yaml
+kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm-docs/$SAMPLE_VERSION/manifests/apps/bookwarehouse.yaml
+kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm-docs/$SAMPLE_VERSION/manifests/apps/mysql.yaml
+
+kubectl get pods,deployments,serviceaccounts -n bookbuyer
+kubectl get pods,deployments,serviceaccounts -n bookthief
+
+kubectl get pods,deployments,serviceaccounts,services,endpoints -n bookstore
+kubectl get pods,deployments,serviceaccounts,services,endpoints -n bookwarehouse
 
 nohup kubectl port-forward $(kubectl get pod -n bookbuyer -o name) -n bookbuyer 8080:14001 &
 #http://localhost:8080
 
-nohup kubectl port-forward $(kubectl get pod -n bookthief -o name) -n bookthief 8081:14001 &
-#http://localhost:8081
+nohup kubectl port-forward $(kubectl get pod -n bookthief -o name) -n bookthief 8083:14001 &
+#http://localhost:8083
+
+nohup kubectl port-forward $(kubectl get pod -n bookstore -o name) -n bookstore 8084:14001 &
+#http://localhost:8084
 ```
 
 Turn off permissive traffic and explicit allow bookbuyer to access bookstore
@@ -64,31 +98,55 @@ Turn off permissive traffic and explicit allow bookbuyer to access bookstore
 kubectl patch meshconfig osm-mesh-config -n kube-system -p '{"spec":{"traffic":{"enablePermissiveTrafficPolicyMode":false}}}' --type=merge
 
 # Apply an SMI traffic access policy for buying books
-kubectl apply -f allow-bookbuyer-smi.yaml
-
-kubectl describe serviceaccount -n bookbuyer bookbuyer
-kubectl get serviceaccount -n bookbuyer bookbuyer -o yaml
-kubectl get secret -n bookbuyer
-kubectl get secret -n bookbuyer -o yaml bookbuyer-token-wtm9h
-echo <jwt> | base64 -d
+kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm-docs/$SAMPLE_VERSION/manifests/access/traffic-access-v1.yaml
 ```
 
-Paste the JWT into https://jwt.io
+Examine the access policies in the YAML file above.
 
-This represents the bookbuyer identity and has been signed by the OSM CA.
+The bookbuyer should now be purchasing books again.
 
 Traffic Split with SMI
 ----------------------
 
 ```sh
-kubectl apply -f bookbuyer-v2.yaml
+kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm-docs/$SAMPLE_VERSION/manifests/apps/bookstore-v2.yaml
 
 kubectl get pod,svc -n bookstore
 
-kubectl apply -f bookbuyer-split-smi.yaml
+nohup kubectl port-forward $(kubectl get pod -n bookstore -o name --selector app=bookstore,version=v2) -n bookstore 8082:14001 &
+#http://localhost:8082
+
+# Traffic is both to both bookstore v1 and b2 since the service/bookstore does not include a version label in the selector
+
+kubectl describe -n bookstore service/bookstore
+kubectl describe -n bookstore service/bookstore-v1
+kubectl describe -n bookstore service/bookstore-v2
+
+# Split traffic, initially 100% to bookstore-v1
+kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm-docs/$SAMPLE_VERSION/manifests/split/traffic-split-v1.yaml
+
+kubectl describe trafficsplit bookstore-split -n bookstore
 ```
 
 Also, check the KubeView for `bookstore` namespace.
+
+Split 50-50 between v1 and v2:
+
+```sh
+kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm-docs/$SAMPLE_VERSION/manifests/split/traffic-split-50-50.yaml
+
+kubectl describe trafficsplit bookstore-split -n bookstore
+```
+
+Split 100% to v2:
+
+```sh
+kubectl apply -f https://raw.githubusercontent.com/openservicemesh/osm-docs/$SAMPLE_VERSION/manifests/split/traffic-split-v2.yaml
+
+kubectl describe trafficsplit bookstore-split -n bookstore
+```
+
+To decommision bookstore-v1 you would delete the v1 deployment and service.
 
 Enable metrics in OSM monitored namespaces for Azure Monitor
 ------------------------------------------------------------
@@ -99,6 +157,7 @@ osm metrics enable --namespace bookstore
 osm metrics enable --namespace bookthief
 osm metrics enable --namespace bookwarehouse
 
+# see: https://learn.microsoft.com/en-us/azure/aks/open-service-mesh-integrations#metrics-observability
 kubectl apply -f azmon-osm.yaml
 ```
 
@@ -122,12 +181,14 @@ InsightsMetrics
 
 View the OSM monitoring report in the AKS cluster via the preview link: https://aka.ms/azmon/osmux
 
-Go to the AKS cluster / Insights / Reports / OSM monitoring
+Go to your AKS cluster / Insights / Reports / OSM monitoring
+
+It may take a few mins to see the metrics appear.
 
 Configure observability metrics for your mesh
 ---------------------------------------------
 
-Refer to: https://release-v1-0.docs.openservicemesh.io/docs/guides/observability/
+Refer to: https://release-v1-2.docs.openservicemesh.io/docs/guides/observability/
 
 Open Service Mesh (OSM) generates detailed metrics related to all traffic within the mesh. These metrics provide insights into the behavior of applications in the mesh helping users to troubleshoot, maintain, and analyze their applications.
 
@@ -149,252 +210,26 @@ kubectl get configmap stable-prometheus-server -o yaml > cm-stable-prometheus-se
 cp cm-stable-prometheus-server.yml cm-stable-prometheus-server.yml.copy
 ```
 
-Update the Prometheus server YAML, copy and paste this snippet:
+Ammend the Prometheus server YAML (`cm-stable-prometheus-server.yaml`), by copying the `kubernetes-pods` job from this page: https://release-v1-2.docs.openservicemesh.io/docs/guides/observability/metrics/#bring-your-own
+
+It should look like this:
 
 ```yaml
-  prometheus.yml: |
-    global:
-      scrape_interval: 10s
-      scrape_timeout: 10s
-      evaluation_interval: 1m
-
-    scrape_configs:
-      - job_name: 'kubernetes-apiservers'
-        kubernetes_sd_configs:
-        - role: endpoints
-        scheme: https
-        tls_config:
-          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-          # TODO need to remove this when the CA and SAN match
-          insecure_skip_verify: true
-        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        metric_relabel_configs:
-        - source_labels: [__name__]
-          regex: '(apiserver_watch_events_total|apiserver_admission_webhook_rejection_count)'
-          action: keep
-        relabel_configs:
-        - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
-          action: keep
-          regex: default;kubernetes;https
-
-      - job_name: 'kubernetes-nodes'
-        scheme: https
-        tls_config:
-          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        kubernetes_sd_configs:
-        - role: node
-        relabel_configs:
-        - action: labelmap
-          regex: __meta_kubernetes_node_label_(.+)
-        - target_label: __address__
-          replacement: kubernetes.default.svc:443
-        - source_labels: [__meta_kubernetes_node_name]
-          regex: (.+)
-          target_label: __metrics_path__
-          replacement: /api/v1/nodes/${1}/proxy/metrics
-
-      - job_name: 'kubernetes-pods'
-        kubernetes_sd_configs:
-        - role: pod
-        metric_relabel_configs:
-        - source_labels: [__name__]
-          regex: '(envoy_server_live|envoy_cluster_upstream_rq_xx|envoy_cluster_upstream_cx_active|envoy_cluster_upstream_cx_tx_bytes_total|envoy_cluster_upstream_cx_rx_bytes_total|envoy_cluster_upstream_cx_destroy_remote_with_active_rq|envoy_cluster_upstream_cx_connect_timeout|envoy_cluster_upstream_cx_destroy_local_with_active_rq|envoy_cluster_upstream_rq_pending_failure_eject|envoy_cluster_upstream_rq_pending_overflow|envoy_cluster_upstream_rq_timeout|envoy_cluster_upstream_rq_rx_reset|^osm.*)'
-          action: keep
-        relabel_configs:
-        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
-          action: keep
-          regex: true
-        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
-          action: replace
-          target_label: __metrics_path__
-          regex: (.+)
-        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
-          action: replace
-          regex: ([^:]+)(?::\d+)?;(\d+)
-          replacement: $1:$2
-          target_label: __address__
-        - source_labels: [__meta_kubernetes_namespace]
-          action: replace
-          target_label: source_namespace
-        - source_labels: [__meta_kubernetes_pod_name]
-          action: replace
-          target_label: source_pod_name
-        - regex: '(__meta_kubernetes_pod_label_app)'
-          action: labelmap
-          replacement: source_service
-        - regex: '(__meta_kubernetes_pod_label_osm_envoy_uid|__meta_kubernetes_pod_label_pod_template_hash|__meta_kubernetes_pod_label_version)'
-          action: drop
-        # for non-ReplicaSets (DaemonSet, StatefulSet)
-        # __meta_kubernetes_pod_controller_kind=DaemonSet
-        # __meta_kubernetes_pod_controller_name=foo
-        # =>
-        # workload_kind=DaemonSet
-        # workload_name=foo
-        - source_labels: [__meta_kubernetes_pod_controller_kind]
-          action: replace
-          target_label: source_workload_kind
-        - source_labels: [__meta_kubernetes_pod_controller_name]
-          action: replace
-          target_label: source_workload_name
-        # for ReplicaSets
-        # __meta_kubernetes_pod_controller_kind=ReplicaSet
-        # __meta_kubernetes_pod_controller_name=foo-bar-123
-        # =>
-        # workload_kind=Deployment
-        # workload_name=foo-bar
-        # deplyment=foo
-        - source_labels: [__meta_kubernetes_pod_controller_kind]
-          action: replace
-          regex: ^ReplicaSet$
-          target_label: source_workload_kind
-          replacement: Deployment
-        - source_labels:
-          - __meta_kubernetes_pod_controller_kind
-          - __meta_kubernetes_pod_controller_name
-          action: replace
-          regex: ^ReplicaSet;(.*)-[^-]+$
-          target_label: source_workload_name
-
-      - job_name: 'smi-metrics'
+ ...snip...
+ - honor_labels: true
+      job_name: 'kubernetes-pods'
         kubernetes_sd_configs:
         - role: pod
         relabel_configs:
         - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
-          action: keep
-          regex: true
-        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
-          action: replace
-          target_label: __metrics_path__
-          regex: (.+)
-        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
-          action: replace
-          regex: ([^:]+)(?::\d+)?;(\d+)
-          replacement: $1:$2
-          target_label: __address__
-        metric_relabel_configs:
-        - source_labels: [__name__]
-          regex: 'envoy_.*osm_request_(total|duration_ms_(bucket|count|sum))'
-          action: keep
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_response_code_(\d{3})_source_namespace_.*_source_kind_.*_source_name_.*_source_pod_.*_destination_namespace_.*_destination_kind_.*_destination_name_.*_destination_pod_.*_osm_request_total
-          target_label: response_code
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_response_code_\d{3}_source_namespace_(.*)_source_kind_.*_source_name_.*_source_pod_.*_destination_namespace_.*_destination_kind_.*_destination_name_.*_destination_pod_.*_osm_request_total
-          target_label: source_namespace
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_response_code_\d{3}_source_namespace_.*_source_kind_(.*)_source_name_.*_source_pod_.*_destination_namespace_.*_destination_kind_.*_destination_name_.*_destination_pod_.*_osm_request_total
-          target_label: source_kind
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_response_code_\d{3}_source_namespace_.*_source_kind_.*_source_name_(.*)_source_pod_.*_destination_namespace_.*_destination_kind_.*_destination_name_.*_destination_pod_.*_osm_request_total
-          target_label: source_name
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_response_code_\d{3}_source_namespace_.*_source_kind_.*_source_name_.*_source_pod_(.*)_destination_namespace_.*_destination_kind_.*_destination_name_.*_destination_pod_.*_osm_request_total
-          target_label: source_pod
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_response_code_\d{3}_source_namespace_.*_source_kind_.*_source_name_.*_source_pod_.*_destination_namespace_(.*)_destination_kind_.*_destination_name_.*_destination_pod_.*_osm_request_total
-          target_label: destination_namespace
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_response_code_\d{3}_source_namespace_.*_source_kind_.*_source_name_.*_source_pod_.*_destination_namespace_.*_destination_kind_(.*)_destination_name_.*_destination_pod_.*_osm_request_total
-          target_label: destination_kind
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_response_code_\d{3}_source_namespace_.*_source_kind_.*_source_name_.*_source_pod_.*_destination_namespace_.*_destination_kind_.*_destination_name_(.*)_destination_pod_.*_osm_request_total
-          target_label: destination_name
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_response_code_\d{3}_source_namespace_.*_source_kind_.*_source_name_.*_source_pod_.*_destination_namespace_.*_destination_kind_.*_destination_name_.*_destination_pod_(.*)_osm_request_total
-          target_label: destination_pod
-        - source_labels: [__name__]
-          action: replace
-          regex: .*(osm_request_total)
-          target_label: __name__
-
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_source_namespace_(.*)_source_kind_.*_source_name_.*_source_pod_.*_destination_namespace_.*_destination_kind_.*_destination_name_.*_destination_pod_.*_osm_request_duration_ms_(bucket|sum|count)
-          target_label: source_namespace
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_source_namespace_.*_source_kind_(.*)_source_name_.*_source_pod_.*_destination_namespace_.*_destination_kind_.*_destination_name_.*_destination_pod_.*_osm_request_duration_ms_(bucket|sum|count)
-          target_label: source_kind
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_source_namespace_.*_source_kind_.*_source_name_(.*)_source_pod_.*_destination_namespace_.*_destination_kind_.*_destination_name_.*_destination_pod_.*_osm_request_duration_ms_(bucket|sum|count)
-          target_label: source_name
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_source_namespace_.*_source_kind_.*_source_name_.*_source_pod_(.*)_destination_namespace_.*_destination_kind_.*_destination_name_.*_destination_pod_.*_osm_request_duration_ms_(bucket|sum|count)
-          target_label: source_pod
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_source_namespace_.*_source_kind_.*_source_name_.*_source_pod_.*_destination_namespace_(.*)_destination_kind_.*_destination_name_.*_destination_pod_.*_osm_request_duration_ms_(bucket|sum|count)
-          target_label: destination_namespace
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_source_namespace_.*_source_kind_.*_source_name_.*_source_pod_.*_destination_namespace_.*_destination_kind_(.*)_destination_name_.*_destination_pod_.*_osm_request_duration_ms_(bucket|sum|count)
-          target_label: destination_kind
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_source_namespace_.*_source_kind_.*_source_name_.*_source_pod_.*_destination_namespace_.*_destination_kind_.*_destination_name_(.*)_destination_pod_.*_osm_request_duration_ms_(bucket|sum|count)
-          target_label: destination_name
-        - source_labels: [__name__]
-          action: replace
-          regex: envoy_source_namespace_.*_source_kind_.*_source_name_.*_source_pod_.*_destination_namespace_.*_destination_kind_.*_destination_name_.*_destination_pod_(.*)_osm_request_duration_ms_(bucket|sum|count)
-          target_label: destination_pod
-        - source_labels: [__name__]
-          action: replace
-          regex: .*(osm_request_duration_ms_(bucket|sum|count))
-          target_label: __name__
-
-      - job_name: 'kubernetes-cadvisor'
-        scheme: https
-        tls_config:
-          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        kubernetes_sd_configs:
-        - role: node
-        metric_relabel_configs:
-        - source_labels: [__name__]
-          regex: '(container_cpu_usage_seconds_total|container_memory_rss)'
-          action: keep
-        relabel_configs:
-        - action: labelmap
-          regex: __meta_kubernetes_node_label_(.+)
-        - target_label: __address__
-          replacement: kubernetes.default.svc:443
-        - source_labels: [__meta_kubernetes_node_name]
-          regex: (.+)
-          target_label: __metrics_path__
-          replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+            action: keep
+  ...snip...
 ```
 
-into the YAML below:
-
-```yaml
-apiVersion: v1
-data:
-  alerting_rules.yml: |
-    {}
-  alerts: |
-    {}
-  recording_rules.yml: |
-    {}
-  # Paste prometheus.yml snippet in here!
-  rules: |
-    {}
-kind: ConfigMap
-```
+Apply the config change:
 
 ```sh
-kubectl apply -f Kubernetes/cm-stable-prometheus-server.yml
+kubectl apply -f cm-stable-prometheus-server.yml
 ```
 
 Verify Prometheus is correctly configured to scrape OSM mesh and API endpoints:
@@ -405,6 +240,14 @@ kubectl --namespace default port-forward $PROM_POD_NAME 9090
 ```
 
 Open a browser up to http://localhost:9090/targets
+
+Search for "osm" on the page - you should find some metrics endpoints.
+
+Enter the following Prom query at http://localhost:9090/graph to see successful http requests:
+
+```promql
+envoy_cluster_upstream_rq_xx{envoy_response_code_class="2"}
+```
 
 Deploy and configure Grafana:
 
@@ -431,17 +274,17 @@ Add a datasource in Grafan for Prometheus:
 
 * Configuration / Data Sources / Add data source ([link](http://localhost:3000/datasources/new))
 * Select Prometheus
-* Update URL: `http://table-prometheus-server.default.svc.cluster.local`
+* Update URL: `http://stable-prometheus-server.default.svc.cluster.local`
 * Click **Save & test**
 
 Import OSM dashboard:
 
-* Download JSON dashboards for Grafana from here: https://github.com/openservicemesh/osm/tree/release-v1.0/charts/osm/grafana/dashboards
+* Download JSON dashboards for Grafana from here: https://github.com/openservicemesh/osm/tree/release-v1.2/charts/osm/grafana/dashboards
 
 ```sh
 git clone https://github.com/openservicemesh/osm
 cd osm
-git checkout release-v1.0
+git checkout $SAMPLE_VERSION
 cd charts/osm/grafana/dashboards/
 cp *.json <dest_dir>/grafana-dashboards/
 ```
@@ -449,8 +292,9 @@ cp *.json <dest_dir>/grafana-dashboards/
 * Click *`+`* / Import ([link](http://localhost:3000/dashboard/import))
 * Select "Upload JSON file"
 * Click **Load**
-* Select your Prometheus data source (if prompted)
-* Click Import
+* Select your `Prometheus` data source (if prompted)
+* Enter `kube-system` for the OSM namespace (if prompted)
+* Click **Import**
 
 You will now see the Grafana dashboards for OSM.
 
@@ -476,16 +320,22 @@ Cleanup
 ```sh
 kubectl patch meshconfig osm-mesh-config -n kube-system -p '{"spec":{"traffic":{"enablePermissiveTrafficPolicyMode":true}}}' --type=merge
 
-pkill nohup
+pkill kubectl
 
-# or to fully clean up
+# or to fully clean up thje app
 kubectl delete ns bookstore
 kubectl delete ns bookbuyer
 kubectl delete ns bookthief
 kubectl delete ns bookwarehouse
+
+# uninstall 3pp components
+helm del kubeview -n Kubeview
+helm del osm-grafana
+helm del stable
 ```
 
 References
 ----------
 
-* https://docs.microsoft.com/en-au/azure/aks/open-service-mesh-deploy-new-application
+* https://openservicemesh.io/
+* https://release-v1-2.docs.openservicemesh.io/
